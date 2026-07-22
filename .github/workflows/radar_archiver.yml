@@ -2,7 +2,7 @@ name: MGM Radar Archiver
 
 on:
   schedule:
-    - cron: '*/6 * * * *'
+    - cron: '*/12 * * * *'
   workflow_dispatch:
 
 jobs:
