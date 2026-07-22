@@ -14,8 +14,6 @@ jobs:
     steps:
       - name: Depoyu Klonla
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Tüm geçmişi çekerek senkronizasyonu garantiler
 
       - name: Python Kurulumu
         uses: actions/setup-python@v5
@@ -30,12 +28,8 @@ jobs:
       - name: Radar Görselini Çek
         run: python fetch_radar.py
 
-      - name: Görseli Depoya Otomatik Commit Et
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add images/
-          git status
-          git commit -m "auto: yeni radar görseli eklendi [$(date -u +'%Y-%m-%d %H:%M UTC')]" || echo "Yeni resim indirilemedi."
-          git pull --rebase origin main
-          git push
+      - name: Otomatik Commit ve Push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "auto: radar görseli eklendi"
+          file_pattern: "images/*"
