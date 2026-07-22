@@ -2,6 +2,7 @@ name: MGM Radar Archiver
 
 on:
   schedule:
+    # Her 6 dakikada bir çalışır
     - cron: '*/6 * * * *'
   workflow_dispatch:
 
@@ -12,12 +13,12 @@ jobs:
       contents: write
 
     steps:
-      - name: Depoyu Klonla
+      - name: Depoyu Tüm Geçmişiyle Klonla
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # Rebase ve senkronizasyon için tüm commit geçmişini çeker
 
-      - name: Python Kurulumu
+      - name: Python Ortamını Hazırla
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -27,18 +28,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
-      - name: Radar Görselini Çek
+      - name: Radar Görsellerini Çek
         run: python fetch_radar.py
 
-      - name: Git Kimliğini Yapılandır ve Rebase Yap
+      - name: Git Kimliğini Tanımla ve Uzak Depoyla Senkronize Et
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --origin main --rebase || echo "Rebase gerekmedi veya senkronize."
+          git pull origin main --rebase || echo "Senkronizasyon adımı tamamlandı veya çakışma yok."
 
       - name: Otomatik Commit ve Push
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "auto: radar görseli eklendi"
+          commit_message: "auto: radar görseli eklendi [$(date -u +'%Y-%m-%d %H:%M UTC')]"
           file_pattern: "images/*"
           skip_ci: true
+          push_options: '--force-with-lease'
