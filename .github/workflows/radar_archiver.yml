@@ -1,9 +1,8 @@
 name: MGM Radar Archiver
 
 on:
-  schedule:
-    # Her 6 dakikada bir çalışır
-    - cron: '*/6 * * * *'
+  repository_dispatch:
+    types: [trigger-radar]
   workflow_dispatch:
 
 jobs:
@@ -16,7 +15,7 @@ jobs:
       - name: Depoyu Tüm Geçmişiyle Klonla
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Rebase ve senkronizasyon için tüm commit geçmişini çeker
+          fetch-depth: 0
 
       - name: Python Ortamını Hazırla
         uses: actions/setup-python@v5
@@ -40,7 +39,7 @@ jobs:
       - name: Otomatik Commit ve Push
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "auto: radar görseli eklendi [$(date -u +'%Y-%m-%d %H:%M UTC')]"
+          commit_message: "auto: radar görseli eklendi"
           file_pattern: "images/*"
           skip_ci: true
           push_options: '--force-with-lease'
