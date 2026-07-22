@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Depoyu Klonla
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Python Kurulumu
         uses: actions/setup-python@v5
@@ -28,8 +30,15 @@ jobs:
       - name: Radar Görselini Çek
         run: python fetch_radar.py
 
+      - name: Git Kimliğini Yapılandır ve Rebase Yap
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --origin main --rebase || echo "Rebase gerekmedi veya senkronize."
+
       - name: Otomatik Commit ve Push
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "auto: radar görseli eklendi"
           file_pattern: "images/*"
+          skip_ci: true
