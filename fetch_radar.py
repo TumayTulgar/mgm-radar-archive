@@ -36,7 +36,7 @@ def download_radar_product(product_code, page_url):
         img_res = requests.get(full_img_url, headers=HEADERS, timeout=15)
         img_res.raise_for_status()
 
-        # Sunucudaki resmin orijinal oluşturulma anını al
+        # Sunucudaki resmin orijinal oluşturulma zamanını al
         last_modified = img_res.headers.get('Last-Modified')
         timestamp = None
         
@@ -48,7 +48,7 @@ def download_radar_product(product_code, page_url):
             except Exception:
                 pass
         
-        # Eğer sunucu tarih vermezse (hata olursa) güvenli liman olarak kodun çalıştığı anı kullan
+        # Sunucu tarih vermezse fallback olarak UTC zamanını kullan
         if not timestamp:
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
