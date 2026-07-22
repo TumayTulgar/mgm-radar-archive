@@ -1,0 +1,28 @@
+name: MGM Radar Archiver
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  archive-radar:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - run: pip install requests beautifulsoup4
+      - run: python fetch_radar.py
+
+      - run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add images/
+          git commit -m "auto: radar görseli eklendi" || echo "Değişiklik yok"
+          git push
