@@ -12,17 +12,30 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Tüm geçmişi çekerek senkronizasyonu garantiler
+
+      - name: Python Kurulumu
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - run: pip install requests beautifulsoup4
-      - run: python fetch_radar.py
+      - name: Bağımlılıkları Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
 
-      - run: |
+      - name: Radar Görselini Çek
+        run: python fetch_radar.py
+
+      - name: Görseli Depoya Otomatik Commit Et
+        run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add images/
-          git commit -m "auto: radar görseli eklendi" || echo "Değişiklik yok"
+          git status
+          git commit -m "auto: yeni radar görseli eklendi [$(date -u +'%Y-%m-%d %H:%M UTC')]" || echo "Yeni resim indirilemedi."
+          git pull --rebase origin main
           git push
