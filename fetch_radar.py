@@ -18,7 +18,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 REQUIRE_ECHO = True 
 TURKEY_TZ = timezone(timedelta(hours=3))
 TOTAL_TIMEOUT_SECONDS = 50
-MAX_WORKERS = 6
+MAX_WORKERS = 8
 
 ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
@@ -35,14 +35,26 @@ s3 = boto3.client(
     region_name="auto"
 )
 
-# Plaka, Kısa Kod ve Klasör Etiketi eşleşmesi
+# MGM FTP Dizin Eşleşmeleri (Plaka, MGM Kısa Kod, Klasör Etiketi)
 STATION_MAP = [
-    ('03', 'afy', '03C'), ('06', 'ank', '06C'), ('07', 'ant', '07C'),
-    ('10', 'bal', '10C'), ('16', 'bur', '16C'), ('25', 'erz', '25C'),
-    ('27', 'gzt', '27C'), ('31', 'hty', '31C'), ('34', 'ist', '34C'),
-    ('35', 'izm', '35C'), ('48', 'mug', '48C'), ('55', 'sam', '55C'),
-    ('58', 'siv', '58C'), ('61', 'tra', '61C'), ('63', 'urf', '63C'),
-    ('67', 'zon', '67C'), ('70', 'krm', '70C'), ('79', 'kls', '79C')
+    ('03', 'afy', '03C'), # Afyon
+    ('06', 'ank', '06C'), # Ankara
+    ('07', 'ant', '07C'), # Antalya
+    ('10', 'blk', '10C'), # Balıkesir (Düzeltildi: blk)
+    ('16', 'brs', '16C'), # Bursa (Düzeltildi: brs)
+    ('25', 'erz', '25C'), # Erzurum
+    ('27', 'gzt', '27C'), # Gaziantep
+    ('31', 'hty', '31C'), # Hatay
+    ('34', 'ist', '34C'), # İstanbul
+    ('35', 'izm', '35C'), # İzmir
+    ('48', 'mgl', '48C'), # Muğla (Düzeltildi: mgl)
+    ('55', 'smn', '55C'), # Samsun (Düzeltildi: smn)
+    ('58', 'svs', '58C'), # Sivas (Düzeltildi: svs)
+    ('61', 'trb', '61C'), # Trabzon (Düzeltildi: trb)
+    ('63', 'srf', '63C'), # Şanlıurfa (Düzeltildi: srf)
+    ('67', 'zng', '67C'), # Zonguldak (Düzeltildi: zng)
+    ('70', 'krm', '70C'), # Karaman
+    ('79', 'mob', '79C')  # Kilis (Düzeltildi: mob)
 ]
 
 HEADERS = {
@@ -60,8 +72,7 @@ def fetch_image_from_urls(urls):
     
     for url in urls:
         try:
-            res = session.get(url, timeout=2.5, verify=False)
-            # MGM'nin 'Görsel Yok' placeholder resmi ~2876 bayttır
+            res = session.get(url, timeout=1.5, verify=False)
             if res.status_code == 200 and len(res.content) > 5000:
                 img = Image.open(io.BytesIO(res.content))
                 img.load()
@@ -125,19 +136,17 @@ def is_duplicate_in_r2(plate, date_path, new_webp_bytes):
 
 def generate_candidate_urls(plate, short_code, folder_tag):
     urls = []
-    time_suffixes = ["15", "00", "05", "10", ""]
-    
-    # 1. Klasör bazı: /radar/ist/istvil15.jpg veya /radar/ist/istvil.jpg
-    for suffix in time_suffixes:
+    # 1. Öncelikli MGM Radar VIL URL'leri (Zaman etiketi sırasıyla)
+    for suffix in ["15", "00", "05", "10", ""]:
         urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil{suffix}.jpg")
         urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil{suffix}.png")
     
-    # 2. VIL ortak klasörü: /radar/vil/vil_34C.png veya /radar/vil/vil_34.jpg
+    # 2. Alternatif VIL Klasörü URL'leri
     for tag in [folder_tag, plate, short_code]:
         urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{tag}.png")
         urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{tag}.jpg")
     
-    # Mükerrer URL'leri temizle
+    # Mükerrer bağlantıları ayıkla
     seen = set()
     deduped = []
     for u in urls:
