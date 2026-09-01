@@ -19,7 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests boto3
+          pip install requests boto3 numpy opencv-python-headless
 
       - name: Fetch Radar and Upload to R2
         env:
