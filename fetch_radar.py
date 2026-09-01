@@ -18,7 +18,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 REQUIRE_ECHO = True 
 TURKEY_TZ = timezone(timedelta(hours=3))
 TOTAL_TIMEOUT_SECONDS = 45
-MAX_WORKERS = 4
+MAX_WORKERS = 6
 
 ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
@@ -35,9 +35,14 @@ s3 = boto3.client(
     region_name="auto"
 )
 
-STATIONS = [
-    '03', '06', '07', '10', '16', '25', '27', '31', '34', 
-    '35', '70', '79', '48', '55', '58', '63', '61', '67'
+# Plaka, Kısa Kod ve Klasör Etiketi eşleşmesi
+STATION_MAP = [
+    ('03', 'afy', '03C'), ('06', 'ank', '06C'), ('07', 'ant', '07C'),
+    ('10', 'bal', '10C'), ('16', 'bur', '16C'), ('25', 'erz', '25C'),
+    ('27', 'gzt', '27C'), ('31', 'hty', '31C'), ('34', 'ist', '34C'),
+    ('35', 'izm', '35C'), ('48', 'mug', '48C'), ('55', 'sam', '55C'),
+    ('58', 'siv', '58C'), ('61', 'tra', '61C'), ('63', 'urf', '63C'),
+    ('67', 'zon', '67C'), ('70', 'krm', '70C'), ('79', 'kls', '79C')
 ]
 
 HEADERS = {
@@ -45,29 +50,24 @@ HEADERS = {
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": "https://www.mgm.gov.tr/sondurum/radar.aspx",
-    "Origin": "https://www.mgm.gov.tr",
-    "Connection": "keep-alive"
+    "Cache-Control": "no-cache"
 }
 
-def fetch_image_from_urls(station_code, urls):
+def fetch_image_from_urls(urls):
     session = requests.Session()
     session.headers.update(HEADERS)
-    
     last_err = "Bilinmeyen Hata"
+    
     for url in urls:
         try:
-            # Tekil URL isteği için max 3.5s bekleme
-            res = session.get(url, timeout=3.5, verify=False)
+            res = session.get(url, timeout=4, verify=False)
+            # MGM'nin 'Görsel Yok' resmi 2876 bayttır; gerçek radar resmi > 5000 bayt olur
             if res.status_code == 200 and len(res.content) > 5000:
                 img = Image.open(io.BytesIO(res.content))
                 img.load()
                 return img, None
             else:
-                last_err = f"HTTP {res.status_code} (Boyut: {len(res.content)})"
-        except requests.exceptions.ConnectTimeout:
-            last_err = "Bağlantı Zaman Aşımı (MGM IP Blokluyor Olabilir)"
-        except requests.exceptions.ReadTimeout:
-            last_err = "Yanıt Zaman Aşımı"
+                last_err = f"Resim Bulunamadı ({len(res.content)} B)"
         except Exception as e:
             last_err = str(e)
             
@@ -108,8 +108,8 @@ def convert_to_lossless_webp(img):
     img.save(buffer, format="WEBP", lossless=True, quality=100)
     return buffer.getvalue()
 
-def is_duplicate_in_r2(station_code, date_path, new_webp_bytes):
-    prefix = f"{date_path}/{station_code}/VIL_"
+def is_duplicate_in_r2(plate, date_path, new_webp_bytes):
+    prefix = f"{date_path}/{plate}/VIL_"
     new_md5 = hashlib.md5(new_webp_bytes).hexdigest()
     
     try:
@@ -123,27 +123,32 @@ def is_duplicate_in_r2(station_code, date_path, new_webp_bytes):
         pass
     return False
 
-def process_station(station_code, date_path, time_str):
+def process_station(station_info, date_path, time_str):
+    plate, short_code, folder_tag = station_info
+
+    # Tüm olası MGM FTP VIL URL kombinasyonları
     urls = [
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{station_code}C.png",
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{station_code}.png",
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{station_code}C.jpg",
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{station_code}.jpg"
+        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil15.jpg",
+        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{folder_tag}.png",
+        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{folder_tag}.jpg",
+        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{plate}.png",
+        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{plate}.jpg",
+        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{plate}/{plate}vil15.jpg"
     ]
     
-    img, err = fetch_image_from_urls(station_code, urls)
+    img, err = fetch_image_from_urls(urls)
     if img is None:
-        return f" -> [HATA] İstasyon {station_code}: {err}"
+        return f" -> [HATA/ATLANDI] İstasyon {plate}: {err}"
 
     if not has_radar_echo(img):
-        return f" -> [ATLANDI - EKO YOK] İstasyon {station_code}"
+        return f" -> [ATLANDI - EKO YOK] İstasyon {plate}"
 
     webp_bytes = convert_to_lossless_webp(img)
 
-    if is_duplicate_in_r2(station_code, date_path, webp_bytes):
-        return f" -> [ÇÖPE ATILDI - ZAMAN DAMGASI DEĞİŞMEDİ] İstasyon {station_code}"
+    if is_duplicate_in_r2(plate, date_path, webp_bytes):
+        return f" -> [ÇÖPE ATILDI - ZAMAN DAMGASI DEĞİŞMEDİ] İstasyon {plate}"
 
-    object_key = f"{date_path}/{station_code}/VIL_{time_str}.webp"
+    object_key = f"{date_path}/{plate}/VIL_{time_str}.webp"
 
     try:
         s3.put_object(
@@ -154,7 +159,7 @@ def process_station(station_code, date_path, time_str):
         )
         return f" -> [R2 YÜKLENDİ] {object_key} ({len(webp_bytes)/1024:.1f} KB)"
     except Exception as e:
-        return f" -> [YÜKLEME HATASI] İstasyon {station_code}: {e}"
+        return f" -> [YÜKLEME HATASI] İstasyon {plate}: {e}"
 
 def main():
     now_tr = datetime.now(TURKEY_TZ)
@@ -164,7 +169,7 @@ def main():
     print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] 18 İstasyon için VIL Taraması Başlatılıyor...", flush=True)
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(process_station, st, date_path, time_str): st for st in STATIONS}
+        futures = {executor.submit(process_station, st, date_path, time_str): st[0] for st in STATION_MAP}
         
         try:
             for future in as_completed(futures, timeout=TOTAL_TIMEOUT_SECONDS):
