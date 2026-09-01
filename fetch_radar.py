@@ -1,68 +1,47 @@
 import os
-import urllib.parse
-from datetime import datetime
 import requests
-from bs4 import BeautifulSoup
+import boto3
+from datetime import datetime
 
-RADAR_SOURCES = {
-    "MAX": "https://www.mgm.gov.tr/sondurum/radar.aspx?rG=img&rR=34C&rU=max",
-    "PPI": "https://www.mgm.gov.tr/sondurum/radar.aspx?rG=img&rR=34C&rU=ppi"
-}
+# GitHub Secrets üzerinden gelen R2 bilgileri
+ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
+ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
+SECRET_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
+BUCKET_NAME = os.environ.get("R2_BUCKET_NAME")
 
-SAVE_DIR = "images"
-os.makedirs(SAVE_DIR, exist_ok=True)
+# Cloudflare R2 Endpoint URL
+R2_ENDPOINT = f"https://{ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
-    "Referer": "https://www.mgm.gov.tr/",
-    "Cache-Control": "no-cache"
-}
+# S3 İstemcisi Kurulumu
+s3 = boto3.client(
+    service_name="s3",
+    endpoint_url=R2_ENDPOINT,
+    aws_access_key_id=ACCESS_KEY,
+    aws_secret_access_key=SECRET_KEY,
+    region_name="auto"
+)
 
-def download_radar_product(product_code, page_url):
-    try:
-        response = requests.get(page_url, headers=HEADERS, timeout=15)
-        response.raise_for_status()
+# MGM Radar Görüntü Bağlantısı
+RADAR_URL = "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_34C.png"
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        img_tag = soup.find("img", id="radarImg") or soup.find(
-            "img", src=lambda s: s and ("radar" in s.lower() or "34C" in s)
+def main():
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(RADAR_URL, headers=headers)
+    
+    if response.status_code == 200:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        object_name = f"radar_34C_{timestamp}.png"
+        
+        # Doğrudan Cloudflare R2'ye yükle
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=object_name,
+            Body=response.content,
+            ContentType="image/png"
         )
-
-        if not img_tag or not img_tag.get("src"):
-            print(f"[{product_code}] Radar görseli bulunamadı.")
-            return
-
-        full_img_url = urllib.parse.urljoin(page_url, img_tag["src"])
-        img_res = requests.get(full_img_url, headers=HEADERS, timeout=15)
-        img_res.raise_for_status()
-
-        # Sunucudaki resmin orijinal oluşturulma zamanını al
-        last_modified = img_res.headers.get('Last-Modified')
-        timestamp = None
-        
-        if last_modified:
-            try:
-                from email.utils import parsedate_to_datetime
-                dt = parsedate_to_datetime(last_modified)
-                timestamp = dt.strftime("%Y%m%d_%H%M%S")
-            except Exception:
-                pass
-        
-        # Sunucu tarih vermezse fallback olarak UTC zamanını kullan
-        if not timestamp:
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-
-        filename = f"radar_34C_{product_code}_{timestamp}.png"
-        filepath = os.path.join(SAVE_DIR, filename)
-
-        with open(filepath, "wb") as f:
-            f.write(img_res.content)
-
-        print(f"[{product_code}] Başarıyla kaydedildi: {filepath}")
-
-    except Exception as e:
-        print(f"[{product_code}] Hata oluştu: {e}")
+        print(f"Görsel başarıyla R2 deposuna yüklendi: {object_name}")
+    else:
+        print(f"MGM'den görsel alınamadı. Hata kodu: {response.status_code}")
 
 if __name__ == "__main__":
-    for code, url in RADAR_SOURCES.items():
-        download_radar_product(code, url)
+    main()
