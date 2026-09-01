@@ -1,7 +1,6 @@
 import os
 import io
 import time
-import random
 import hashlib
 import requests
 import boto3
@@ -18,8 +17,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==========================================
 REQUIRE_ECHO = True 
 TURKEY_TZ = timezone(timedelta(hours=3))
-FETCH_INTERVAL_SECONDS = 360  # 6 Dakika
-TOTAL_TIMEOUT_SECONDS = 15   # 18 istasyon için toplam zaman aşımı
+TOTAL_TIMEOUT_SECONDS = 15   # 18 istasyon için sert zaman aşımı
 
 ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
@@ -36,14 +34,10 @@ s3 = boto3.client(
     region_name="auto"
 )
 
-# Yalnızca belirttiğin 18 adet radar istasyon kodu
 STATIONS = [
     '03', '06', '07', '10', '16', '25', '27', '31', '34', 
     '35', '70', '79', '48', '55', '58', '63', '61', '67'
 ]
-
-# Bellekte istasyon bazlı son yüklenen veri hash'ini (zaman damgası durumunu) tutan sözlük
-LAST_STATION_HASHES = {}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -56,13 +50,12 @@ def fetch_image_from_urls(urls):
     session = requests.Session()
     for url in urls:
         try:
-            # 15s toplam sınıra takılmamak için bireysel HTTP zaman aşımı 3sn tutuldu
             res = session.get(url, headers=HEADERS, timeout=3, verify=False)
             if res.status_code == 200 and len(res.content) > 5000:
                 img = Image.open(io.BytesIO(res.content))
                 img.load()
                 return img, None
-        except Exception as e:
+        except Exception:
             continue
     return None, "Görsel çekilemedi / Zaman aşımı"
 
@@ -101,6 +94,21 @@ def convert_to_lossless_webp(img):
     img.save(buffer, format="WEBP", lossless=True, quality=100)
     return buffer.getvalue()
 
+def is_duplicate_in_r2(station_code, date_path, new_webp_bytes):
+    prefix = f"{date_path}/{station_code}/VIL_"
+    new_md5 = hashlib.md5(new_webp_bytes).hexdigest()
+    
+    try:
+        response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=prefix)
+        if 'Contents' in response and len(response['Contents']) > 0:
+            latest_obj = sorted(response['Contents'], key=lambda x: x['Key'])[-1]
+            last_etag = latest_obj['ETag'].strip('"')
+            if last_etag == new_md5:
+                return True
+    except Exception:
+        pass
+    return False
+
 def process_station(station_code, date_path, time_str):
     urls = [
         f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{station_code}C.png",
@@ -117,13 +125,10 @@ def process_station(station_code, date_path, time_str):
         return f" -> [ATLANDI - EKO YOK] İstasyon {station_code}"
 
     webp_bytes = convert_to_lossless_webp(img)
-    current_md5 = hashlib.md5(webp_bytes).hexdigest()
 
-    # Zaman damgası/görsel değişmediyse çöpe at (atla)
-    if LAST_STATION_HASHES.get(station_code) == current_md5:
-        return f" -> [ÇÖPE ATILDI - AYNI ZAMAN DAMGASI] İstasyon {station_code}"
+    if is_duplicate_in_r2(station_code, date_path, webp_bytes):
+        return f" -> [ÇÖPE ATILDI - ZAMAN DAMGASI DEĞİŞMEDİ] İstasyon {station_code}"
 
-    # Hiyerarşik Dizin Yapısı: YIL/AY/GÜN/İSTASYON/VIL_SAAT.webp
     object_key = f"{date_path}/{station_code}/VIL_{time_str}.webp"
 
     try:
@@ -133,43 +138,27 @@ def process_station(station_code, date_path, time_str):
             Body=webp_bytes,
             ContentType="image/webp"
         )
-        LAST_STATION_HASHES[station_code] = current_md5
         return f" -> [R2 YÜKLENDİ] {object_key} ({len(webp_bytes)/1024:.1f} KB)"
     except Exception as e:
         return f" -> [YÜKLEME HATASI] İstasyon {station_code}: {e}"
 
-def run_cycle():
+def main():
     now_tr = datetime.now(TURKEY_TZ)
-    date_path = now_tr.strftime('%Y/%m/%d') # YIL/AY/GÜN
-    time_str = now_tr.strftime('%H%M%S')    # SAAT-DAKİKA-SANİYE
+    date_path = now_tr.strftime('%Y/%m/%d')
+    time_str = now_tr.strftime('%H%M%S')
 
-    print(f"\n[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] 18 İstasyon için VIL Taraması Başlatılıyor...")
+    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] 18 İstasyon için VIL Taraması Başlatılıyor...", flush=True)
 
-    # 18 İstasyon paralel olarak çalıştırılır
     with ThreadPoolExecutor(max_workers=18) as executor:
         futures = {executor.submit(process_station, st, date_path, time_str): st for st in STATIONS}
         
         try:
-            # 15 saniye içinde tamamlanmayan sorguları otomatik keser/atlar
             for future in as_completed(futures, timeout=TOTAL_TIMEOUT_SECONDS):
-                print(future.result())
+                print(future.result(), flush=True)
         except TimeoutError:
-            print(f"[ZAMAN AŞIMI] 15 saniyelik toplam sorgu süresi doldu! Tamamlanamayan istasyonlar atlandı.")
+            print("[ZAMAN AŞIMI] 15 saniyelik toplam sorgu süresi doldu! Tamamlanamayan istasyonlar atlandı.", flush=True)
 
-def main():
-    while True:
-        cycle_start = time.time()
-        
-        try:
-            run_cycle()
-        except Exception as e:
-            print(f"Döngü hatası: {e}")
-            
-        elapsed_time = time.time() - cycle_start
-        sleep_duration = max(0, FETCH_INTERVAL_SECONDS - elapsed_time)
-        
-        print(f"Tarama {elapsed_time:.2f} sn sürdü. Sonraki tarama için {sleep_duration:.0f} sn bekleniyor...")
-        time.sleep(sleep_duration)
+    print("İşlem başarıyla tamamlandı.", flush=True)
 
 if __name__ == "__main__":
     main()
