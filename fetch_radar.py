@@ -1,5 +1,7 @@
 import os
 import io
+import time
+import random
 import hashlib
 import requests
 import boto3
@@ -8,7 +10,6 @@ from PIL import Image
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# SSL sertifika uyarılarını bastır
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -43,7 +44,7 @@ STATION_MAP = [
 ]
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
     "Cache-Control": "no-cache"
@@ -51,20 +52,32 @@ HEADERS = {
 
 def fetch_image_from_urls(urls):
     last_err = ""
+    session = requests.Session()
+    
     for url in urls:
-        try:
-            # Timeout 12s yapıldı, SSL doğrulaması esnetildi
-            res = requests.get(url, headers=HEADERS, timeout=12, verify=False)
-            if res.status_code == 200 and len(res.content) > 5000:
-                img = Image.open(io.BytesIO(res.content))
-                img.load()
-                return img, None
-            else:
-                last_err = f"HTTP {res.status_code}"
-        except requests.exceptions.Timeout:
-            last_err = "Zaman Aşımı (Timeout)"
-        except Exception as e:
-            last_err = str(e)
+        # Sunucunun IP engeli koymaması için micro-sleep
+        time.sleep(random.uniform(0.2, 0.5))
+        
+        for attempt in range(2): # Her URL için 2 deneme hakkı
+            try:
+                res = session.get(url, headers=HEADERS, timeout=10, verify=False)
+                if res.status_code == 200:
+                    if len(res.content) > 5000:
+                        img = Image.open(io.BytesIO(res.content))
+                        img.load()
+                        return img, None
+                    else:
+                        last_err = f"Boş/Bozuk Görsel ({len(res.content)}B)"
+                else:
+                    last_err = f"HTTP {res.status_code}"
+            except requests.exceptions.Timeout:
+                last_err = "Zaman Aşımı (Timeout)"
+            except Exception as e:
+                last_err = str(e)
+            
+            if attempt == 0 and "Timeout" in last_err:
+                time.sleep(1) # Timeout durumunda 1 saniye bekleyip tekrar dene
+                
     return None, last_err
 
 def has_radar_echo(img, min_echo_pixels=10):
@@ -180,10 +193,10 @@ def main():
         ]
         targets.append((folder_tag, 'MAX', urls))
 
-    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] Dengeli tarama başlatılıyor ({len(targets)} hedef)...")
+    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] Dereceli tarama başlatılıyor ({len(targets)} hedef)...")
     
-    # MGM engeline takılmamak için max_workers=3 yapıldı
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    # Eşzamanlı istek sayısı 2'ye düşürüldü (güvenlik duvarını aşmak için)
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(process_target, t, date_path, time_str) for t in targets]
         for future in as_completed(futures):
             print(future.result())
