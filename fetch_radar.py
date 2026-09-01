@@ -34,13 +34,14 @@ s3 = boto3.client(
     region_name="auto"
 )
 
+# İstanbul (34C) dahil edilerek tam 18 istasyon listelendi
 STATION_MAP = [
-    ('03', 'afy', '03C'), ('06', 'ank', '06C'), ('07', 'ant', '07C'),
-    ('10', 'bal', '10C'), ('16', 'bur', '16C'), ('25', 'erz', '25C'),
-    ('27', 'gzt', '27C'), ('31', 'hty', '31C'), ('35', 'izm', '35C'),
-    ('48', 'mug', '48C'), ('55', 'sam', '55C'), ('58', 'siv', '58C'),
-    ('61', 'tra', '61C'), ('63', 'urf', '63C'), ('67', 'zon', '67C'),
-    ('70', 'krm', '70C'), ('79', 'kls', '79C')
+    ('34', 'ist', '34C'), ('03', 'afy', '03C'), ('06', 'ank', '06C'), 
+    ('07', 'ant', '07C'), ('10', 'bal', '10C'), ('16', 'bur', '16C'), 
+    ('25', 'erz', '25C'), ('27', 'gzt', '27C'), ('31', 'hty', '31C'), 
+    ('35', 'izm', '35C'), ('48', 'mug', '48C'), ('55', 'sam', '55C'), 
+    ('58', 'siv', '58C'), ('61', 'tra', '61C'), ('63', 'urf', '63C'), 
+    ('67', 'zon', '67C'), ('70', 'krm', '70C'), ('79', 'kls', '79C')
 ]
 
 HEADERS = {
@@ -55,10 +56,9 @@ def fetch_image_from_urls(urls):
     session = requests.Session()
     
     for url in urls:
-        # Sunucunun IP engeli koymaması için micro-sleep
         time.sleep(random.uniform(0.2, 0.5))
         
-        for attempt in range(2): # Her URL için 2 deneme hakkı
+        for attempt in range(2):
             try:
                 res = session.get(url, headers=HEADERS, timeout=10, verify=False)
                 if res.status_code == 200:
@@ -76,7 +76,7 @@ def fetch_image_from_urls(urls):
                 last_err = str(e)
             
             if attempt == 0 and "Timeout" in last_err:
-                time.sleep(1) # Timeout durumunda 1 saniye bekleyip tekrar dene
+                time.sleep(1)
                 
     return None, last_err
 
@@ -100,6 +100,7 @@ def has_radar_echo(img, min_echo_pixels=10):
     with np.errstate(divide='ignore', invalid='ignore'):
         saturation = np.where(max_c == 0, 0, (max_c - min_c) / max_c)
     
+    # VIL renk paleti için de mevcut doygunluk maskesi işlevseldir
     echo_mask = (saturation > 0.40) & (max_c > 70) & (max_c < 252)
     road_mask = (r > 200) & (g < 60) & (b < 60)
     valid_echo_mask = echo_mask & (~road_mask)
@@ -164,38 +165,29 @@ def main():
     date_path = now_tr.strftime('%Y/%m/%d')
     time_str = now_tr.strftime('%H%M%S')
 
+    # 1 Adet Birleştirilmiş VIL Görseli
     targets = [
-        ('COMPOSITE', 'PPI', [
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_00.png",
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_00.jpg",
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/comp/compppi15.jpg"
-        ]),
-        ('34C', 'PPI', [
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_34C.png",
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_34C.jpg",
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ist/istppi15.jpg"
-        ]),
-        ('34C', 'MAX', [
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_34C.png",
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_34C.jpg",
-            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ist/istmax15.jpg"
+        ('COMPOSITE', 'VIL', [
+            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_00.png",
+            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_00.jpg",
+            "https://www.mgm.gov.tr/FTPDATA/uzal/radar/comp/compvil15.jpg"
         ])
     ]
 
+    # 18 Adet Merkez Radar VIL Görselleri
     for plate, short_code, folder_tag in STATION_MAP:
         urls = [
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{folder_tag}.png",
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{plate}.png",
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{folder_tag}.jpg",
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{plate}.jpg",
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}max15.jpg",
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{plate}/{plate}max15.jpg"
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{folder_tag}.png",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{plate}.png",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{folder_tag}.jpg",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{plate}.jpg",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil15.jpg",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{plate}/{plate}vil15.jpg"
         ]
-        targets.append((folder_tag, 'MAX', urls))
+        targets.append((folder_tag, 'VIL', urls))
 
-    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] Dereceli tarama başlatılıyor ({len(targets)} hedef)...")
+    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] VIL taraması başlatılıyor ({len(targets)} hedef)...")
     
-    # Eşzamanlı istek sayısı 2'ye düşürüldü (güvenlik duvarını aşmak için)
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(process_target, t, date_path, time_str) for t in targets]
         for future in as_completed(futures):
