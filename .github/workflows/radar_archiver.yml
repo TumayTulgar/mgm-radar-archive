@@ -2,8 +2,10 @@ name: MGM Radar R2 Archiver
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # Her 10 dakikada bir otomatik çalışır
+    - cron: '*/10 * * * *'
   workflow_dispatch:
+  repository_dispatch:
+    types: [radar_trigger]
 
 jobs:
   archive:
@@ -19,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests boto3 Pillow
+          pip install requests boto3 Pillow numpy
 
       - name: Fetch Radar and Upload to R2
         env:
