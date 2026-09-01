@@ -6,7 +6,13 @@ import numpy as np
 from PIL import Image
 from datetime import datetime
 
-# GitHub Secrets üzerinden gelen R2 bilgileri
+# ==========================================
+# AYARLAR
+# ==========================================
+# True:  Sadece dBZ > 2 (yağış/eko) olan görselleri R2'ye yükler.
+# False: Yağış olsun veya olmasın tüm illeri koşulsuz yükler.
+REQUIRE_ECHO = True
+
 ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
 SECRET_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
@@ -22,25 +28,25 @@ s3 = boto3.client(
     region_name="auto"
 )
 
-# MGM Radar İstasyon Listesi (Görseldeki 18 İl + Kodları)
-STATIONS = [
-    ('03C', 'Afyonkarahisar'),
-    ('06C', 'Ankara'),
-    ('07C', 'Antalya'),
-    ('10C', 'Balikesir'),
-    ('16C', 'Bursa'),
-    ('25C', 'Erzurum'),
-    ('27C', 'Gaziantep'),
-    ('31C', 'Hatay'),
-    ('35C', 'Izmir'),
-    ('48C', 'Mugla'),
-    ('55C', 'Samsun'),
-    ('58C', 'Sivas'),
-    ('61C', 'Trabzon'),
-    ('63C', 'Sanliurfa'),
-    ('67C', 'Zonguldak'),
-    ('70C', 'Karaman'),
-    ('79C', 'Kilis')
+# MGM Radar İstasyon Mapping (Plaka, 3-Harf Kodu, Etiket)
+STATION_MAP = [
+    ('03', 'afy', '03C'), # Afyonkarahisar
+    ('06', 'ank', '06C'), # Ankara
+    ('07', 'ant', '07C'), # Antalya
+    ('10', 'bal', '10C'), # Balıkesir
+    ('16', 'bur', '16C'), # Bursa
+    ('25', 'erz', '25C'), # Erzurum
+    ('27', 'gzt', '27C'), # Gaziantep
+    ('31', 'hty', '31C'), # Hatay
+    ('35', 'izm', '35C'), # İzmir
+    ('48', 'mug', '48C'), # Muğla
+    ('55', 'sam', '55C'), # Samsun
+    ('58', 'siv', '58C'), # Sivas
+    ('61', 'tra', '61C'), # Trabzon
+    ('63', 'urf', '63C'), # Şanlıurfa
+    ('67', 'zon', '67C'), # Zonguldak
+    ('70', 'krm', '70C'), # Karaman
+    ('79', 'kls', '79C')  # Kilis
 ]
 
 HEADERS = {
@@ -53,25 +59,27 @@ def fetch_image_from_urls(urls):
     """Verilen alternatif URL'leri sırayla dener, doğrulanan ilk görseli döndürür."""
     for url in urls:
         try:
-            res = requests.get(url, headers=HEADERS, timeout=10)
+            res = requests.get(url, headers=HEADERS, timeout=8)
             if res.status_code == 200 and len(res.content) > 5000:
                 img = Image.open(io.BytesIO(res.content))
                 img.load()
-                print(f" -> [İNDİRİLDİ] {url} ({len(res.content)/1024:.1f} KB)")
+                print(f" -> [BAŞARILI BAĞLANTI] {url} ({len(res.content)/1024:.1f} KB)")
                 return img
         except Exception:
             continue
     return None
 
-def has_radar_echo(img, min_echo_pixels=25):
+def has_radar_echo(img, min_echo_pixels=20):
     """
     Görselde dBZ > 2 yağış ekosu (renkli radar kütlesi) olup olmadığını analiz eder.
-    Haritanın zemin rengini, karayolu/il sınırlarını ve lejantı eleyerek radar ekolarını tespit eder.
     """
+    if not REQUIRE_ECHO:
+        return True # Filtre kapalıysa doğrudan onay ver
+
     rgb_img = img.convert("RGB")
     w, h = rgb_img.size
     
-    # Sağdaki lejantı ve üst/alt başlıkları elemek için harita merkez alanını kırp
+    # Lejant ve başlıkları elemek için harita iç alanını kırp
     crop_box = (int(w * 0.05), int(h * 0.10), int(w * 0.85), int(h * 0.90))
     cropped = rgb_img.crop(crop_box)
     
@@ -80,17 +88,14 @@ def has_radar_echo(img, min_echo_pixels=25):
     g = np_img[:, :, 1].astype(float)
     b = np_img[:, :, 2].astype(float)
     
-    # Renk doygunluğu (HSV Saturation hesaplaması)
+    # Renk doygunluğu
     max_c = np.maximum(np.maximum(r, g), b)
     min_c = np.minimum(np.minimum(r, g), b)
     saturation = np.where(max_c == 0, 0, (max_c - min_c) / max_c)
     
-    # MGM Radar Eko Renk Kriteri (Mavi, Yeşil, Sarı, Turuncu, Kırmızı, Mor eko pikselleri)
-    # Doygunluğu yüksek ve nötr gri/beyaz olmayan pikseller
-    echo_mask = (saturation > 0.42) & (max_c > 75) & (max_c < 252)
-    
-    # Harita üzerindeki kırmızı il/yol sınır hatlarını elemek için filtre
-    road_mask = (r > 200) & (g < 60) & (b < 60)
+    # Yağış ekosu renk tespiti
+    echo_mask = (saturation > 0.40) & (max_c > 70) & (max_c < 252)
+    road_mask = (r > 200) & (g < 60) & (b < 60) # İl sınır kırmızıları
     valid_echo_mask = echo_mask & (~road_mask)
     
     echo_pixels = np.sum(valid_echo_mask)
@@ -99,7 +104,7 @@ def has_radar_echo(img, min_echo_pixels=25):
     return echo_pixels >= min_echo_pixels
 
 def convert_to_lossless_webp(img):
-    """Görseli Kayıpsız (Lossless) WebP formatına dönüştürür."""
+    """Görseli Kayıpsız WebP formatına dönüştürür."""
     buffer = io.BytesIO()
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGBA")
@@ -113,15 +118,14 @@ def main():
     date_path = now.strftime('%Y/%m/%d')
     time_str = now.strftime('%H%M%S')
 
-    # Target yapısı: (İstasyon Klasörü, Ürün Adı, URL Alternatifleri)
     targets = [
-        # 1. Türkiye Birleştirilmiş Görüntü (PPI)
+        # 1. Türkiye Birleştirilmiş Radar
         ('COMPOSITE', 'PPI', [
             "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_00.png",
             "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_00.jpg",
             "https://www.mgm.gov.tr/FTPDATA/uzal/radar/comp/compppi15.jpg"
         ]),
-        # 2. İstanbul (Hem MAX hem PPI)
+        # 2. İstanbul
         ('34C', 'PPI', [
             "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_34C.png",
             "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_34C.jpg",
@@ -134,15 +138,17 @@ def main():
         ])
     ]
 
-    # 3. Görseldeki Diğer Tüm İller (MAX Ürünleri)
-    for code, name in STATIONS:
-        code_num = code.replace('C', '')
-        targets.append((code, 'MAX', [
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{code}.png",
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{code_num}.png",
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{code}.jpg",
-            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{code_num}/{code_num}max15.jpg"
-        ]))
+    # 3. Tüm Diğer İller (MGM alternatif URL kombinasyonları)
+    for plate, short_code, folder_tag in STATION_MAP:
+        urls = [
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{folder_tag}.png",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{plate}.png",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{folder_tag}.jpg",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{plate}.jpg",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}max15.jpg",
+            f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{plate}/{plate}max15.jpg"
+        ]
+        targets.append((folder_tag, 'MAX', urls))
 
     uploaded_count = 0
     skipped_count = 0
@@ -152,7 +158,6 @@ def main():
         img = fetch_image_from_urls(urls)
 
         if img is not None:
-            # dBZ > 2 Eko Kontrolü
             if has_radar_echo(img):
                 try:
                     webp_bytes = convert_to_lossless_webp(img)
@@ -167,14 +172,14 @@ def main():
                     print(f" -> [R2 YÜKLENDİ] {object_key} ({len(webp_bytes)/1024:.1f} KB)")
                     uploaded_count += 1
                 except Exception as e:
-                    print(f" -> [HATA] R2'ye yüklenirken hata oluştu ({station}_{product}): {e}")
+                    print(f" -> [HATA] R2 yükleme hatası ({station}_{product}): {e}")
             else:
-                print(f" -> [ATLANDI] {station} - {product} üzerinde dBZ > 2 eko bulunamadı (Açık hava).")
+                print(f" -> [ATLANDI] {station} - {product}: Yağış ekosu yok (Açık hava).")
                 skipped_count += 1
         else:
-            print(f" -> [UYARI] {station} - {product} için kaynak görsel çekilemedi.")
+            print(f" -> [UYARI] {station} - {product}: Kaynak görsel çekilemedi.")
 
-    print(f"\nİşlem tamamlandı: {uploaded_count} adet radarda eko tespit edilip R2'ye aktarıldı, {skipped_count} adet boş görsel atlandı.")
+    print(f"\nİşlem tamamlandı. {uploaded_count} dosya yüklendi, {skipped_count} açık hava görseli atlandı.")
 
 if __name__ == "__main__":
     main()
