@@ -8,26 +8,23 @@ from PIL import Image
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ==========================================
-# KONFİGÜRASYON VE AYARLAR
-# ==========================================
-# True: Sadece dBZ > 2 (yağış/eko) olan görselleri R2'ye yükler.
-# False: Yağış olmasa da tüm radar karelerini arşivler.
-REQUIRE_ECHO = True 
+# SSL sertifika uyarılarını bastır
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Türkiye Saat Dilimi (UTC+3)
+# ==========================================
+# AYARLAR
+# ==========================================
+REQUIRE_ECHO = True 
 TURKEY_TZ = timezone(timedelta(hours=3))
 
-# GitHub Secrets / Çevre Değişkenleri
 ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
 SECRET_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 BUCKET_NAME = os.environ.get("R2_BUCKET_NAME")
 
-# Cloudflare R2 S3 Bağlantı Adresi
 R2_ENDPOINT = f"https://{ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-# S3 İstemcisini Başlat
 s3 = boto3.client(
     service_name="s3",
     endpoint_url=R2_ENDPOINT,
@@ -36,7 +33,6 @@ s3 = boto3.client(
     region_name="auto"
 )
 
-# MGM Radar İstasyon Listesi: (Plaka Kodu, Kısa Kod, MGM Klasör Etiketi)
 STATION_MAP = [
     ('03', 'afy', '03C'), ('06', 'ank', '06C'), ('07', 'ant', '07C'),
     ('10', 'bal', '10C'), ('16', 'bur', '16C'), ('25', 'erz', '25C'),
@@ -47,44 +43,36 @@ STATION_MAP = [
 ]
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://www.mgm.gov.tr/sondurum/radar.aspx",
-    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache"
 }
 
-# ==========================================
-# YARDIMCI FONKSİYONLAR
-# ==========================================
-
 def fetch_image_from_urls(urls):
-    """
-    Belirtilen alternatif URL'leri sırayla dener. 
-    Bakımdaki veya çökmüş istasyonlar için maksimum 4 saniye bekler.
-    """
+    last_err = ""
     for url in urls:
         try:
-            # Bakımdaki istasyonların kilitlenmesini önleyen 4sn timeout
-            res = requests.get(url, headers=HEADERS, timeout=4)
+            # Timeout 12s yapıldı, SSL doğrulaması esnetildi
+            res = requests.get(url, headers=HEADERS, timeout=12, verify=False)
             if res.status_code == 200 and len(res.content) > 5000:
                 img = Image.open(io.BytesIO(res.content))
                 img.load()
-                return img
-        except Exception:
-            # Sunucu yanıt vermediğinde, zaman aşımına uğradığında pas geç
-            continue
-    return None
+                return img, None
+            else:
+                last_err = f"HTTP {res.status_code}"
+        except requests.exceptions.Timeout:
+            last_err = "Zaman Aşımı (Timeout)"
+        except Exception as e:
+            last_err = str(e)
+    return None, last_err
 
-def has_radar_echo(img, min_echo_pixels=20):
-    """
-    Görselde gerçek radar eko (yağış) pikseli olup olmadığını analiz eder.
-    """
+def has_radar_echo(img, min_echo_pixels=10):
     if not REQUIRE_ECHO:
         return True
 
     rgb_img = img.convert("RGB")
     w, h = rgb_img.size
-    
-    # Lejant ve başlık alanlarını hariç tut, sadece radar haritasını kırp
     crop_box = (int(w * 0.05), int(h * 0.10), int(w * 0.85), int(h * 0.90))
     cropped = rgb_img.crop(crop_box)
     
@@ -96,14 +84,10 @@ def has_radar_echo(img, min_echo_pixels=20):
     max_c = np.maximum(np.maximum(r, g), b)
     min_c = np.minimum(np.minimum(r, g), b)
     
-    # Siyah piksellerde sıfıra bölme uyarısını bastır
     with np.errstate(divide='ignore', invalid='ignore'):
         saturation = np.where(max_c == 0, 0, (max_c - min_c) / max_c)
     
-    # Eko Renk Filtresi (Canlı yeşil, sarı, turuncu, kırmızı, mor)
     echo_mask = (saturation > 0.40) & (max_c > 70) & (max_c < 252)
-    
-    # Harita üzerindeki kırmızı karayolu çizgilerini filtreden çıkar
     road_mask = (r > 200) & (g < 60) & (b < 60)
     valid_echo_mask = echo_mask & (~road_mask)
     
@@ -111,9 +95,6 @@ def has_radar_echo(img, min_echo_pixels=20):
     return echo_pixels >= min_echo_pixels
 
 def convert_to_lossless_webp(img):
-    """
-    Görseli sıkıştırma kayıpsız (Lossless) WebP formatına dönüştürür.
-    """
     buffer = io.BytesIO()
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGBA")
@@ -123,10 +104,6 @@ def convert_to_lossless_webp(img):
     return buffer.getvalue()
 
 def is_duplicate_in_r2(station, product, date_path, new_webp_bytes):
-    """
-    R2'deki en son yüklenen dosyanın MD5 özetini (ETag) kontrol eder.
-    Görsel güncellenmemişse mükerrer yükleme yapmaz.
-    """
     prefix = f"{date_path}/{station}/{product}_"
     new_md5 = hashlib.md5(new_webp_bytes).hexdigest()
     
@@ -142,34 +119,21 @@ def is_duplicate_in_r2(station, product, date_path, new_webp_bytes):
         
     return False
 
-# ==========================================
-# İŞ PARÇACIĞI (THREAD) İŞLEYİCİSİ
-# ==========================================
-
 def process_target(target, date_path, time_str):
-    """
-    Tek bir radar hedefini (İstasyon/Ürün) işleyen bağımsız thread fonksiyonu.
-    """
     station, product, urls = target
-    
-    # 1. Görseli MGM'den çek (4sn limitli)
-    img = fetch_image_from_urls(urls)
+    img, err = fetch_image_from_urls(urls)
 
     if img is None:
-        return f" -> [BAKIM / ÇEKİLEMEDİ] {station} - {product}"
+        return f" -> [ENGEL/HATA] {station} - {product}: {err}"
 
-    # 2. Yağış Eko Analizi
     if not has_radar_echo(img):
         return f" -> [ATLANDI - EKO YOK] {station} - {product}"
 
-    # 3. Lossless WebP Dönüşümü
     webp_bytes = convert_to_lossless_webp(img)
     
-    # 4. Mükerrer Görsel Kontrolü
     if is_duplicate_in_r2(station, product, date_path, webp_bytes):
         return f" -> [ATLANDI - DEĞİŞMEDİ] {station} - {product}"
 
-    # 5. R2 Bucketa Yükleme
     try:
         object_key = f"{date_path}/{station}/{product}_{time_str}.webp"
         s3.put_object(
@@ -182,16 +146,11 @@ def process_target(target, date_path, time_str):
     except Exception as e:
         return f" -> [YÜKLEME HATASI] {station} - {product}: {e}"
 
-# ==========================================
-# ANA ÇALIŞTIRMA BLOĞU
-# ==========================================
-
 def main():
     now_tr = datetime.now(TURKEY_TZ)
     date_path = now_tr.strftime('%Y/%m/%d')
     time_str = now_tr.strftime('%H%M%S')
 
-    # Kompozit ve İstanbul Radarları
     targets = [
         ('COMPOSITE', 'PPI', [
             "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_00.png",
@@ -210,7 +169,6 @@ def main():
         ])
     ]
 
-    # İl İstasyonlarının MAX Ürünleri
     for plate, short_code, folder_tag in STATION_MAP:
         urls = [
             f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{folder_tag}.png",
@@ -222,15 +180,15 @@ def main():
         ]
         targets.append((folder_tag, 'MAX', urls))
 
-    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] Paralel tarama başlatılıyor ({len(targets)} hedef)...")
+    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] Dengeli tarama başlatılıyor ({len(targets)} hedef)...")
     
-    # 10 Thread ile tüm il ve radarlar aynı anda taranır
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    # MGM engeline takılmamak için max_workers=3 yapıldı
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(process_target, t, date_path, time_str) for t in targets]
         for future in as_completed(futures):
             print(future.result())
 
-    print("İşlem başarıyla tamamlandı.")
+    print("İşlem tamamlandı.")
 
 if __name__ == "__main__":
     main()
