@@ -1,8 +1,8 @@
 import os
+import io
 import requests
 import boto3
-import numpy as np
-import cv2
+from PIL import Image
 from datetime import datetime
 
 # GitHub Secrets üzerinden gelen R2 bilgileri
@@ -29,77 +29,97 @@ STATIONS = [
     '61C', '25C', '21C', '63C', '10C', '09C', '48C', '22C', '67C', '41C'
 ]
 
-def check_echo_and_convert(img_bytes, min_dbz_threshold=12):
-    """Görseldeki dBZ renklerini kontrol eder ve WebP'ye çevirir."""
-    # Byte verisini OpenCV formatına dönüştür
-    file_bytes = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    
-    # Görüntü decode edilemediyse gerçek bir görüntü değildir (örn. hata sayfasıdır)
-    if img is None:
-        print("Hata: Veri bir görüntü olarak çözülemedi. Hata sayfası olabilir.")
-        return None, False
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.mgm.gov.tr/sondurum/radar.aspx",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+}
 
-    # TEMEL FİLTRE: Dosya başarılı çözüldüyse yükleyebiliriz.
-    # Eko analizini şimdilik "görüntü çözülebildi" olarak basitleştiriyorum.
-    has_echo = True 
+def fetch_image_from_urls(urls):
+    """Verilen alternatif URL'leri sırayla dener, doğrulanan ilk görseli döndürür."""
+    for url in urls:
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=10)
+            # Hata sayfalarını filtrelemek için boyut 5KB'dan büyük olmalı
+            if res.status_code == 200 and len(res.content) > 5000:
+                img = Image.open(io.BytesIO(res.content))
+                img.load() # Görsel verisinin tam ve bozulmamış olduğunu doğrular
+                print(f" -> [BAŞARILI] {url} ({len(res.content)/1024:.1f} KB)")
+                return img
+        except Exception:
+            continue
+    return None
 
-    # Kayıpsız (Lossless) WebP Formatına Dönüştür (Dosya boyutunu düşürmek için)
-    # decode edilmiş görüntüyü hafızada webp'ye çeviriyoruz.
-    retval, webp_bytes_data = cv2.imencode('.webp', img, [cv2.IMWRITE_WEBP_LOSSLESS, 1, cv2.IMWRITE_WEBP_QUALITY, 100])
-    if not retval:
-        print("Hata: WebP formatına dönüştürülemedi.")
-        return None, False
-        
-    return webp_bytes_data.tobytes(), True
+def convert_to_lossless_webp(img):
+    """Görseli Kayıpsız (Lossless) WebP formatına dönüştürür."""
+    buffer = io.BytesIO()
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGBA")
+    else:
+        img = img.convert("RGB")
+    img.save(buffer, format="WEBP", lossless=True, quality=100)
+    return buffer.getvalue()
 
 def main():
-    # User-Agent başlığını gerçeğe yakın hale getirelim
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     now = datetime.now()
-    timestamp_folder = now.strftime('%Y/%m/%d')
-    timestamp_file = now.strftime('%H%M')
+    date_path = now.strftime('%Y/%m/%d')
+    time_str = now.strftime('%H%M%S')
 
     targets = []
-    # 1. Birleştirilmiş Türkiye Radarı (PPI) - URL'leri tarayıcıda çalışan ham GIF linkleriyle değiştirdim
-    targets.append(('00', 'ppi', 'COMPOSITE_PPI', 12, "https://mgm.gov.tr/ftpradar/00/ppi/00ppi.gif"))
     
-    # 2. İstanbul Radarı (PPI ve MAX) - URL'ler güncellendi
-    targets.append(('34C', 'ppi', '34C_PPI', 12, "https://mgm.gov.tr/ftpradar/34C/ppi/34Cppi.gif"))
-    targets.append(('34C', 'max', '34C_MAX', 12, "https://mgm.gov.tr/ftpradar/34C/max/34Cmax.gif"))
+    # 1. Türkiye Birleştirilmiş Radar (PPI)
+    targets.append(('COMPOSITE_PPI', [
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_00.png",
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_00.jpg",
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/comp/compppi15.jpg"
+    ]))
     
-    # 3. Diğer 17 İl (Sadece MAX - 28 dBZ Eşik) - URL'ler güncellendi
+    # 2. İstanbul Radarı (PPI ve MAX)
+    targets.append(('34C_PPI', [
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_34C.png",
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ppi/ppi_34C.jpg",
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ist/istppi15.jpg"
+    ]))
+    targets.append(('34C_MAX', [
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_34C.png",
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_34C.jpg",
+        "https://www.mgm.gov.tr/FTPDATA/uzal/radar/ist/istmax15.jpg"
+    ]))
+    
+    # 3. Diğer İller (MAX ürünleri)
     for st in STATIONS:
         if st != '34C':
-            targets.append((st, 'max', f'{st}_MAX', 28, f"https://mgm.gov.tr/ftpradar/{st}/max/{st}max.gif"))
+            targets.append((f"{st}_MAX", [
+                f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{st}.png",
+                f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{st}.jpg",
+                f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{st.lower()[:3]}/{st.lower()[:3]}max15.jpg"
+            ]))
 
-    for radar_code, product, label, dbz_limit, url in targets:
-        try:
-            print(f"İndiriliyor ({label}): {url}")
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                # İndirilen verinin boyutunu loglayalım (debug için)
-                print(f"Başarılı ({label}): İndirilen Boyut={len(response.content)/1024:.2f} KB")
+    uploaded_count = 0
+    
+    for label, urls in targets:
+        print(f"\nİşleniyor: {label}")
+        img = fetch_image_from_urls(urls)
+        
+        if img is not None:
+            try:
+                webp_bytes = convert_to_lossless_webp(img)
+                object_key = f"{date_path}/{label}_{time_str}.webp"
                 
-                webp_data, has_echo = check_echo_and_convert(response.content, min_dbz_threshold=dbz_limit)
-                
-                if has_echo:
-                    object_key = f"{timestamp_folder}/{label}_{timestamp_file}.webp"
-                    print(f"Yükleniyor ({label}): {object_key}")
-                    
-                    s3.put_object(
-                        Bucket=BUCKET_NAME,
-                        Key=object_key,
-                        Body=webp_data,
-                        ContentType="image/webp"
-                    )
-                else:
-                    print(f"Atlandı ({label}): Görüntü çözülemedi (hata sayfası olabilir).")
-            else:
-                print(f"Hata ({label}): MGM hata kodu {response.status_code}")
-        except Exception as e:
-            print(f"Hata ({label}): {e}")
+                s3.put_object(
+                    Bucket=BUCKET_NAME,
+                    Key=object_key,
+                    Body=webp_bytes,
+                    ContentType="image/webp"
+                )
+                print(f" -> [R2 YÜKLENDİ] {object_key} ({len(webp_bytes)/1024:.1f} KB)")
+                uploaded_count += 1
+            except Exception as e:
+                print(f" -> [HATA] R2'ye yüklenirken hata oluştu ({label}): {e}")
+        else:
+            print(f" -> [ATLANDI] {label} için geçerli görsel bulunamadı.")
+
+    print(f"\nİşlem tamamlandı. Toplam {uploaded_count} adet radar görseli Cloudflare R2'ye aktarıldı.")
 
 if __name__ == "__main__":
     main()
