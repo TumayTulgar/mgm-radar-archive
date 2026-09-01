@@ -17,7 +17,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==========================================
 REQUIRE_ECHO = True 
 TURKEY_TZ = timezone(timedelta(hours=3))
-TOTAL_TIMEOUT_SECONDS = 15   # 18 istasyon için sert zaman aşımı
+TOTAL_TIMEOUT_SECONDS = 60   # MGM yavaşlığı için toplam süre 60 saniyeye çıkarıldı
+MAX_WORKERS = 6             # MGM sunucusunu kilitlememek için eşzamanlı istek sayısı azaltıldı
 
 ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
@@ -50,7 +51,8 @@ def fetch_image_from_urls(urls):
     session = requests.Session()
     for url in urls:
         try:
-            res = session.get(url, headers=HEADERS, timeout=3, verify=False)
+            # İstek başı zaman aşımı 8 saniye yapıldı
+            res = session.get(url, headers=HEADERS, timeout=8, verify=False)
             if res.status_code == 200 and len(res.content) > 5000:
                 img = Image.open(io.BytesIO(res.content))
                 img.load()
@@ -149,16 +151,16 @@ def main():
 
     print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] 18 İstasyon için VIL Taraması Başlatılıyor...", flush=True)
 
-    with ThreadPoolExecutor(max_workers=18) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(process_station, st, date_path, time_str): st for st in STATIONS}
         
         try:
             for future in as_completed(futures, timeout=TOTAL_TIMEOUT_SECONDS):
                 print(future.result(), flush=True)
         except TimeoutError:
-            print("[ZAMAN AŞIMI] 15 saniyelik toplam sorgu süresi doldu! Tamamlanamayan istasyonlar atlandı.", flush=True)
+            print("[ZAMAN AŞIMI] Toplam süre doldu! Tamamlanamayan istasyonlar atlandı.", flush=True)
 
-    print("İşlem başarıyla tamamlandı.", flush=True)
+    print("İşlem tamamlandı.", flush=True)
 
 if __name__ == "__main__":
     main()
