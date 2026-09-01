@@ -17,8 +17,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==========================================
 REQUIRE_ECHO = True 
 TURKEY_TZ = timezone(timedelta(hours=3))
-TOTAL_TIMEOUT_SECONDS = 60   # MGM yavaşlığı için toplam süre 60 saniyeye çıkarıldı
-MAX_WORKERS = 6             # MGM sunucusunu kilitlememek için eşzamanlı istek sayısı azaltıldı
+TOTAL_TIMEOUT_SECONDS = 45
+MAX_WORKERS = 4
 
 ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
 ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
@@ -44,22 +44,34 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Cache-Control": "no-cache"
+    "Referer": "https://www.mgm.gov.tr/sondurum/radar.aspx",
+    "Origin": "https://www.mgm.gov.tr",
+    "Connection": "keep-alive"
 }
 
-def fetch_image_from_urls(urls):
+def fetch_image_from_urls(station_code, urls):
     session = requests.Session()
+    session.headers.update(HEADERS)
+    
+    last_err = "Bilinmeyen Hata"
     for url in urls:
         try:
-            # İstek başı zaman aşımı 8 saniye yapıldı
-            res = session.get(url, headers=HEADERS, timeout=8, verify=False)
+            # Tekil URL isteği için max 3.5s bekleme
+            res = session.get(url, timeout=3.5, verify=False)
             if res.status_code == 200 and len(res.content) > 5000:
                 img = Image.open(io.BytesIO(res.content))
                 img.load()
                 return img, None
-        except Exception:
-            continue
-    return None, "Görsel çekilemedi / Zaman aşımı"
+            else:
+                last_err = f"HTTP {res.status_code} (Boyut: {len(res.content)})"
+        except requests.exceptions.ConnectTimeout:
+            last_err = "Bağlantı Zaman Aşımı (MGM IP Blokluyor Olabilir)"
+        except requests.exceptions.ReadTimeout:
+            last_err = "Yanıt Zaman Aşımı"
+        except Exception as e:
+            last_err = str(e)
+            
+    return None, last_err
 
 def has_radar_echo(img, min_echo_pixels=10):
     if not REQUIRE_ECHO:
@@ -119,9 +131,9 @@ def process_station(station_code, date_path, time_str):
         f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{station_code}.jpg"
     ]
     
-    img, err = fetch_image_from_urls(urls)
+    img, err = fetch_image_from_urls(station_code, urls)
     if img is None:
-        return f" -> [HATA/ATLANDI] İstasyon {station_code}: {err}"
+        return f" -> [HATA] İstasyon {station_code}: {err}"
 
     if not has_radar_echo(img):
         return f" -> [ATLANDI - EKO YOK] İstasyon {station_code}"
@@ -158,7 +170,7 @@ def main():
             for future in as_completed(futures, timeout=TOTAL_TIMEOUT_SECONDS):
                 print(future.result(), flush=True)
         except TimeoutError:
-            print("[ZAMAN AŞIMI] Toplam süre doldu! Tamamlanamayan istasyonlar atlandı.", flush=True)
+            print("[ZAMAN AŞIMI] İşlem süresi doldu!", flush=True)
 
     print("İşlem tamamlandı.", flush=True)
 
