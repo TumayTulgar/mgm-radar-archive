@@ -17,7 +17,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==========================================
 REQUIRE_ECHO = True 
 TURKEY_TZ = timezone(timedelta(hours=3))
-TOTAL_TIMEOUT_SECONDS = 45
+TOTAL_TIMEOUT_SECONDS = 50
 MAX_WORKERS = 6
 
 ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
@@ -60,8 +60,8 @@ def fetch_image_from_urls(urls):
     
     for url in urls:
         try:
-            res = session.get(url, timeout=4, verify=False)
-            # MGM'nin 'Görsel Yok' resmi 2876 bayttır; gerçek radar resmi > 5000 bayt olur
+            res = session.get(url, timeout=2.5, verify=False)
+            # MGM'nin 'Görsel Yok' placeholder resmi ~2876 bayttır
             if res.status_code == 200 and len(res.content) > 5000:
                 img = Image.open(io.BytesIO(res.content))
                 img.load()
@@ -123,18 +123,32 @@ def is_duplicate_in_r2(plate, date_path, new_webp_bytes):
         pass
     return False
 
+def generate_candidate_urls(plate, short_code, folder_tag):
+    urls = []
+    time_suffixes = ["15", "00", "05", "10", ""]
+    
+    # 1. Klasör bazı: /radar/ist/istvil15.jpg veya /radar/ist/istvil.jpg
+    for suffix in time_suffixes:
+        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil{suffix}.jpg")
+        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil{suffix}.png")
+    
+    # 2. VIL ortak klasörü: /radar/vil/vil_34C.png veya /radar/vil/vil_34.jpg
+    for tag in [folder_tag, plate, short_code]:
+        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{tag}.png")
+        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{tag}.jpg")
+    
+    # Mükerrer URL'leri temizle
+    seen = set()
+    deduped = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            deduped.append(u)
+    return deduped
+
 def process_station(station_info, date_path, time_str):
     plate, short_code, folder_tag = station_info
-
-    # Tüm olası MGM FTP VIL URL kombinasyonları
-    urls = [
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil15.jpg",
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{folder_tag}.png",
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{folder_tag}.jpg",
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{plate}.png",
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{plate}.jpg",
-        f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{plate}/{plate}vil15.jpg"
-    ]
+    urls = generate_candidate_urls(plate, short_code, folder_tag)
     
     img, err = fetch_image_from_urls(urls)
     if img is None:
