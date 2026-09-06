@@ -40,28 +40,29 @@ STATION_MAP = [
     ('03', 'afy', '03C'), # Afyon
     ('06', 'ank', '06C'), # Ankara
     ('07', 'ant', '07C'), # Antalya
-    ('10', 'blk', '10C'), # Balıkesir (Düzeltildi: blk)
-    ('16', 'brs', '16C'), # Bursa (Düzeltildi: brs)
+    ('10', 'blk', '10C'), # Balıkesir
+    ('16', 'brs', '16C'), # Bursa
     ('25', 'erz', '25C'), # Erzurum
     ('27', 'gzt', '27C'), # Gaziantep
     ('31', 'hty', '31C'), # Hatay
     ('34', 'ist', '34C'), # İstanbul
     ('35', 'izm', '35C'), # İzmir
-    ('48', 'mgl', '48C'), # Muğla (Düzeltildi: mgl)
-    ('55', 'smn', '55C'), # Samsun (Düzeltildi: smn)
-    ('58', 'svs', '58C'), # Sivas (Düzeltildi: svs)
-    ('61', 'trb', '61C'), # Trabzon (Düzeltildi: trb)
-    ('63', 'srf', '63C'), # Şanlıurfa (Düzeltildi: srf)
-    ('67', 'zng', '67C'), # Zonguldak (Düzeltildi: zng)
+    ('48', 'mgl', '48C'), # Muğla
+    ('55', 'smn', '55C'), # Samsun
+    ('58', 'svs', '58C'), # Sivas
+    ('61', 'trb', '61C'), # Trabzon
+    ('63', 'srf', '63C'), # Şanlıurfa
+    ('67', 'zng', '67C'), # Zonguldak
     ('70', 'krm', '70C'), # Karaman
-    ('79', 'mob', '79C')  # Kilis (Düzeltildi: mob)
+    ('79', 'mob', '79C')  # Kilis
 ]
 
+# Referer header F12 incelemesine göre MAX ürününe uyarlandı
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://www.mgm.gov.tr/sondurum/radar.aspx",
+    "Referer": "https://www.mgm.gov.tr/sondurum/radar.aspx?rG=img&rU=max",
     "Cache-Control": "no-cache"
 }
 
@@ -120,7 +121,8 @@ def convert_to_lossless_webp(img):
     return buffer.getvalue()
 
 def is_duplicate_in_r2(plate, date_path, new_webp_bytes):
-    prefix = f"{date_path}/{plate}/VIL_"
+    # R2'de mükerrer kontrolü MAX_ önekine göre yapılıyor
+    prefix = f"{date_path}/{plate}/MAX_"
     new_md5 = hashlib.md5(new_webp_bytes).hexdigest()
     
     try:
@@ -136,15 +138,15 @@ def is_duplicate_in_r2(plate, date_path, new_webp_bytes):
 
 def generate_candidate_urls(plate, short_code, folder_tag):
     urls = []
-    # 1. Öncelikli MGM Radar VIL URL'leri (Zaman etiketi sırasıyla)
+    # 1. Öncelikli MGM Radar MAX URL'leri (istmax15.jpg mantığı)
     for suffix in ["15", "00", "05", "10", ""]:
-        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil{suffix}.jpg")
-        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}vil{suffix}.png")
+        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}max{suffix}.jpg")
+        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/{short_code}/{short_code}max{suffix}.png")
     
-    # 2. Alternatif VIL Klasörü URL'leri
+    # 2. Alternatif MAX Klasörü URL'leri (MGM yedek klasör standardına göre)
     for tag in [folder_tag, plate, short_code]:
-        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{tag}.png")
-        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/vil/vil_{tag}.jpg")
+        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{tag}.png")
+        urls.append(f"https://www.mgm.gov.tr/FTPDATA/uzal/radar/max/max_{tag}.jpg")
     
     # Mükerrer bağlantıları ayıkla
     seen = set()
@@ -171,7 +173,8 @@ def process_station(station_info, date_path, time_str):
     if is_duplicate_in_r2(plate, date_path, webp_bytes):
         return f" -> [ÇÖPE ATILDI - ZAMAN DAMGASI DEĞİŞMEDİ] İstasyon {plate}"
 
-    object_key = f"{date_path}/{plate}/VIL_{time_str}.webp"
+    # Arşivleme ismi MAX olarak değiştirildi
+    object_key = f"{date_path}/{plate}/MAX_{time_str}.webp"
 
     try:
         s3.put_object(
@@ -189,7 +192,7 @@ def main():
     date_path = now_tr.strftime('%Y/%m/%d')
     time_str = now_tr.strftime('%H%M%S')
 
-    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] 18 İstasyon için VIL Taraması Başlatılıyor...", flush=True)
+    print(f"[{now_tr.strftime('%Y-%m-%d %H:%M:%S')}] 18 İstasyon için MAX Taraması Başlatılıyor...", flush=True)
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(process_station, st, date_path, time_str): st[0] for st in STATION_MAP}
