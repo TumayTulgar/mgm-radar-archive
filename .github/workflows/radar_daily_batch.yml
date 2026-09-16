@@ -1,0 +1,30 @@
+name: MGM Radar Daily NC Batch
+
+on:
+  schedule:
+    - cron: '30 0 * * *' # Her gece 00:30 UTC
+  workflow_dispatch:
+
+jobs:
+  batch_process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install scientific dependencies
+        run: |
+          pip install boto3 Pillow numpy xarray netCDF4
+
+      - name: Run Daily NC Processor
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python batch_processor.py
