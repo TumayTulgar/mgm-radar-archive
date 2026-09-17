@@ -7,9 +7,10 @@ import xarray as xr
 from PIL import Image
 from datetime import datetime, timedelta, timezone
 from pyproj import CRS, Transformer
+import concurrent.futures  # Multiprocessing için eklendi
 
 # ============================================================
-# SABİTLER VE FİZİKSEL PARAMETRELER (Jupyter Notebook'tan Birebir)
+# SABİTLER VE FİZİKSEL PARAMETRELER
 # ============================================================
 RADAR_INFO = {
     "Ankara":         {"coords": (39.798611, 32.971389), "id": "06"},
@@ -146,7 +147,6 @@ def process_station_day(station_name, target_date):
     # 2. Her kareyi indir, fiziksel dönüşümü yap
     for key in objects:
         time_str = key.split("MAX_")[-1].replace(".webp", "")
-        # Saat damgasını parse et (Örn: 154000)
         dt = datetime.strptime(f"{date_path} {time_str}", "%Y/%m/%d %H%M%S")
         times.append(dt)
         
@@ -155,13 +155,17 @@ def process_station_day(station_name, target_date):
         img = Image.open(io.BytesIO(obj["Body"].read())).convert("RGB")
         cropped = np.array(img.crop(PLAN_BOX), dtype=np.uint8)
         
-        # Dönüşüm
+        # Dönüşüm (Önce dBZ hesapla, maskeyi hemen uygula)
         dbz = classify_rgb_to_dbz(cropped)
-        rate = dbz_to_rate_mmh(dbz)
-        
-        # Maskeleme
         dbz[~range_mask] = np.nan
-        rate[~range_mask] = np.nan
+        
+        # BOŞ KARE OPTİMİZASYONU:
+        # Eğer menzil içindeki tüm pikseller NaN ise (yağış yoksa), R hesabını atla
+        if np.all(np.isnan(dbz)):
+            rate = np.full(dbz.shape, np.nan, dtype=np.float32)
+        else:
+            rate = dbz_to_rate_mmh(dbz)
+            rate[~range_mask] = np.nan
         
         frames_dbz.append(dbz)
         frames_rate.append(rate)
@@ -200,28 +204,41 @@ def process_station_day(station_name, target_date):
     encoding = {var: {"zlib": True, "complevel": 4} for var in ["dBZ", "precipitation_rate"]}
     ds.to_netcdf(nc_path, encoding=encoding)
     
-    # 4. NetCDF'i R2'ye yükle (Günün klasörüne .nc olarak)
+    # 4. NetCDF'i R2'ye yükle
     r2_nc_key = f"{date_path}/{nc_filename}"
     s3.upload_file(nc_path, BUCKET_NAME, r2_nc_key)
     print(f"[{station_name}] {r2_nc_key} yüklendi. Temizlik yapılıyor...")
     
-    # 5. Başarılıysa, eski WebP dosyalarını sil (Kotayı temizle)
+    # 5. Başarılıysa, eski WebP dosyalarını sil
     delete_keys = [{'Key': key} for key in objects]
-    # boto3 delete_objects max 1000 obje kabul eder, batchleyerek siliyoruz
     for i in range(0, len(delete_keys), 1000):
         s3.delete_objects(Bucket=BUCKET_NAME, Delete={'Objects': delete_keys[i:i+1000]})
         
     os.remove(nc_path)
     print(f"[{station_name}] Tamamlandı.")
 
+# ============================================================
+# PARALEL ÇALIŞTIRMA MİMARİSİ
+# ============================================================
 if __name__ == "__main__":
-    # GitHub Action gece 00:30 UTC'de çalıştığında bir önceki günü (dün) hedef almalı
     target_date = datetime.now(timezone.utc) - timedelta(days=1)
+    print(f"🚀 Batch Processing Başlıyor... Hedef Tarih: {target_date.strftime('%Y-%m-%d')}")
     
-    print(f"Batch Processing Başlıyor... Hedef Tarih: {target_date.strftime('%Y-%m-%d')}")
+    # GitHub Actions sunucularında 4 çekirdek kullanımı idealdir
+    max_cores = 4 
     
-    for station_name in RADAR_INFO.keys():
-        try:
-            process_station_day(station_name, target_date)
-        except Exception as e:
-            print(f"[{station_name}] Kritik Hata: {e}")
+    # ThreadPool yerine ProcessPool kullanarak Python'un GIL darboğazını aşıyoruz
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_cores) as executor:
+        futures = {
+            executor.submit(process_station_day, station_name, target_date): station_name 
+            for station_name in RADAR_INFO.keys()
+        }
+        
+        for future in concurrent.futures.as_completed(futures):
+            station_name = futures[future]
+            try:
+                future.result() 
+            except Exception as exc:
+                print(f"❌ [{station_name}] İşlenirken kritik hata oluştu: {exc}")
+                
+    print("🏁 Tüm istasyonların Batch işlemi sona erdi.")
