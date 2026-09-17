@@ -1,5 +1,6 @@
 import os
 import io
+import sys
 import boto3
 import numpy as np
 import pandas as pd
@@ -7,7 +8,7 @@ import xarray as xr
 from PIL import Image
 from datetime import datetime, timedelta, timezone
 from pyproj import CRS, Transformer
-import concurrent.futures  # Multiprocessing için eklendi
+import concurrent.futures
 
 # ============================================================
 # SABİTLER VE FİZİKSEL PARAMETRELER
@@ -242,3 +243,4 @@ if __name__ == "__main__":
                 print(f"❌ [{station_name}] İşlenirken kritik hata oluştu: {exc}")
                 
     print("🏁 Tüm istasyonların Batch işlemi sona erdi.")
+    sys.exit(0)  # Asılı kalan işlemleri ve bağlantıları anında öldürür
