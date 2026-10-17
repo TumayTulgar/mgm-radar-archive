@@ -1,15 +1,17 @@
 name: MGM Radar PPI MAX dBZ Collector
 
 on:
-  # No GitHub cron: the existing external scheduler remains responsible for timing.
+  # Existing external scheduler remains the source of timing.
+  # No GitHub cron is defined here.
   workflow_dispatch:
     inputs:
       station:
         description: "Station ID (34 for Istanbul) or all"
         required: true
         type: choice
-        default: all
+        default: "34"
         options:
+          - "34"
           - all
           - "03"
           - "06"
@@ -19,7 +21,6 @@ on:
           - "25"
           - "27"
           - "31"
-          - "34"
           - "35"
           - "48"
           - "55"
@@ -33,17 +34,22 @@ on:
         description: "Radar product to archive"
         required: true
         type: choice
-        default: all
+        default: PPI
         options:
-          - all
           - PPI
           - MAX
+          - all
       dry_run:
-        description: "Download and build local NetCDF artifacts only; do not write to R2"
+        description: "Build local NetCDF only; do not write to R2"
+        required: true
+        type: boolean
+        default: true
+      confirm_live:
+        description: "Explicitly authorize live R2 writes when dry_run=false"
         required: true
         type: boolean
         default: false
-  # Kept for compatibility if the existing external trigger uses repository_dispatch.
+
   repository_dispatch:
     types: [radar_trigger]
 
@@ -52,17 +58,18 @@ permissions:
 
 jobs:
   archive:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install Tesseract OCR
         run: |
@@ -70,26 +77,87 @@ jobs:
           sudo apt-get install -y tesseract-ocr
 
       - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
-      - name: Resolve run inputs
+      - name: Resolve and validate run inputs
+        id: resolve
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          INPUT_STATION: ${{ github.event.inputs.station || github.event.client_payload.station || 'all' }}
-          INPUT_PRODUCT: ${{ github.event.inputs.product || github.event.client_payload.product || 'all' }}
-          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || github.event.client_payload.dry_run || 'false' }}
+          INPUT_STATION: ${{ github.event.inputs.station || '34' }}
+          INPUT_PRODUCT: ${{ github.event.inputs.product || 'PPI' }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+          INPUT_CONFIRM_LIVE: ${{ github.event.inputs.confirm_live || 'false' }}
+          DISPATCH_STATION: ${{ github.event.client_payload.station || 'all' }}
+          DISPATCH_PRODUCT: ${{ github.event.client_payload.product || 'all' }}
+          DISPATCH_DRY_RUN: ${{ github.event.client_payload.dry_run || 'false' }}
+          LIVE_ARCHIVE_ENABLED: ${{ vars.RADAR_LIVE_ARCHIVE_ENABLED || 'false' }}
         run: |
-          echo "RADAR_STATION=$INPUT_STATION" >> "$GITHUB_ENV"
-          echo "RADAR_PRODUCT=$INPUT_PRODUCT" >> "$GITHUB_ENV"
-          echo "RADAR_DRY_RUN=$INPUT_DRY_RUN" >> "$GITHUB_ENV"
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            if [[ "${LIVE_ARCHIVE_ENABLED,,}" == "true" ]]; then
+              INPUT_STATION="$DISPATCH_STATION"
+              INPUT_PRODUCT="$DISPATCH_PRODUCT"
+              INPUT_DRY_RUN="$DISPATCH_DRY_RUN"
+              # The repository variable is the explicit authorization for the external
+              # scheduler's live path. Manual live runs still require confirm_live=true.
+              INPUT_CONFIRM_LIVE="true"
+              echo "Live archive gate: ENABLED by repository variable RADAR_LIVE_ARCHIVE_ENABLED."
+            else
+              # Fail-safe mode: old/empty dispatch payloads cannot start a full live run.
+              INPUT_STATION="34"
+              INPUT_PRODUCT="PPI"
+              INPUT_DRY_RUN="true"
+              INPUT_CONFIRM_LIVE="false"
+              echo "Live archive gate is disabled; this repository_dispatch is limited to Istanbul PPI dry-run."
+            fi
+          fi
+
+          if [[ "$INPUT_DRY_RUN" != "true" && "$INPUT_DRY_RUN" != "false" ]]; then
+            echo "ERROR: dry_run must be true or false." >&2
+            exit 2
+          fi
+
+          if [[ "$INPUT_DRY_RUN" == "false" && "$INPUT_CONFIRM_LIVE" != "true" ]]; then
+            echo "ERROR: Refusing live R2 writes. Explicit authorization is required." >&2
+            exit 2
+          fi
+
+          case "$INPUT_STATION" in
+            all|03|06|07|10|16|25|27|31|34|35|48|55|58|61|63|67|70|79) ;;
+            *) echo "ERROR: Unsupported station input: $INPUT_STATION" >&2; exit 2 ;;
+          esac
+          case "$INPUT_PRODUCT" in
+            PPI|MAX|all) ;;
+            *) echo "ERROR: Unsupported product input: $INPUT_PRODUCT" >&2; exit 2 ;;
+          esac
+
+          echo "station=$INPUT_STATION" >> "$GITHUB_OUTPUT"
+          echo "product=$INPUT_PRODUCT" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$INPUT_DRY_RUN" >> "$GITHUB_OUTPUT"
           echo "Event: $EVENT_NAME"
           echo "Station: $INPUT_STATION"
           echo "Product: $INPUT_PRODUCT"
           echo "Dry run: $INPUT_DRY_RUN"
 
-      - name: Fetch radar, parse UTC panel and archive dBZ NetCDF
+      - name: Run collector in dry-run mode (no R2 credentials)
+        if: ${{ steps.resolve.outputs.dry_run == 'true' }}
         env:
+          RADAR_STATION: ${{ steps.resolve.outputs.station }}
+          RADAR_PRODUCT: ${{ steps.resolve.outputs.product }}
+          RADAR_DRY_RUN: "true"
+          RADAR_DRY_RUN_DIR: output/dry-run
+        run: python fetch_radar.py
+
+      - name: Run collector and upload NetCDF to R2
+        if: ${{ steps.resolve.outputs.dry_run == 'false' }}
+        env:
+          RADAR_STATION: ${{ steps.resolve.outputs.station }}
+          RADAR_PRODUCT: ${{ steps.resolve.outputs.product }}
+          RADAR_DRY_RUN: "false"
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -97,10 +165,10 @@ jobs:
         run: python fetch_radar.py
 
       - name: Upload dry-run NetCDF files as an Actions artifact
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
-        uses: actions/upload-artifact@v4
+        if: ${{ steps.resolve.outputs.dry_run == 'true' && github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: mgm-dbz-dry-run
           path: output/dry-run/**/*.nc
-          if-no-files-found: warn
-          retention-days: 2
+          if-no-files-found: error
+          retention-days: 1
