@@ -824,7 +824,13 @@ def process_one(station_id: str, product: str, dry_run: bool, output_dir: Path, 
     urls = generate_candidate_urls(station_id, product)
     image, source_bytes, source_url, content_type, last_modified, error = fetch_image(urls, product)
     if image is None or source_bytes is None or source_url is None:
-        return f"[NO IMAGE] station={station_id} product={product}: {error}"
+        # Treat missing source imagery as a failed task, not a successful skip.
+        # main() catches this exception, increments its error counter, and exits
+        # with a non-zero status so GitHub Actions cannot silently pass partial runs.
+        raise RuntimeError(
+            f"No valid radar image for station={station_id} "
+            f"product={product}: {error}"
+        )
 
     source_sha = sha256_hex(source_bytes)
     meta = parse_panel_metadata(image, product)

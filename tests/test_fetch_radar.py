@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -115,6 +116,7 @@ def test_make_dataset_masks_palette_pixels_outside_circular_range(tmp_path):
         assert reopened.attrs["netcdf_schema_version"] == "mgm-scan-dbz-v1.1"
 
 
+
 def test_upload_same_source_and_versions_is_idempotent(monkeypatch):
     monkeypatch.setenv("R2_BUCKET_NAME", "test-bucket")
     source_sha = "a" * 64
@@ -138,7 +140,7 @@ def test_upload_same_source_and_versions_is_idempotent(monkeypatch):
 
         def put_object(self, **kwargs):
             self.put_calls += 1
-            raise AssertionError("Idempotent kayit yeniden yuklenmemeli.")
+            raise AssertionError("Idempotent record should not be uploaded again.")
 
     fake = FakeS3()
     result = radar.upload_netcdf(
@@ -156,3 +158,16 @@ def test_upload_same_source_and_versions_is_idempotent(monkeypatch):
     assert result == "UNCHANGED"
     assert fake.put_calls == 0
     assert fake.head_calls == 1
+
+
+def test_process_one_missing_image_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        radar,
+        "fetch_image",
+        lambda urls, product: (
+            None, None, None, None, None, "simulated image unavailable"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="No valid radar image"):
+        radar.process_one("34", "PPI", True, tmp_path)
