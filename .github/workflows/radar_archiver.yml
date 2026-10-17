@@ -1,15 +1,59 @@
-name: MGM Radar R2 Archiver
+name: MGM Radar PPI MAX dBZ Collector
 
 on:
-  schedule:
-    - cron: '*/10 * * * *'
+  # No GitHub cron: the existing external scheduler remains responsible for timing.
   workflow_dispatch:
+    inputs:
+      station:
+        description: "Station ID (34 for Istanbul) or all"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - "03"
+          - "06"
+          - "07"
+          - "10"
+          - "16"
+          - "25"
+          - "27"
+          - "31"
+          - "34"
+          - "35"
+          - "48"
+          - "55"
+          - "58"
+          - "61"
+          - "63"
+          - "67"
+          - "70"
+          - "79"
+      product:
+        description: "Radar product to archive"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - PPI
+          - MAX
+      dry_run:
+        description: "Download and build local NetCDF artifacts only; do not write to R2"
+        required: true
+        type: boolean
+        default: false
+  # Kept for compatibility if the existing external trigger uses repository_dispatch.
   repository_dispatch:
     types: [radar_trigger]
+
+permissions:
+  contents: read
 
 jobs:
   archive:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,16 +61,46 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: "3.11"
+          cache: pip
 
-      - name: Install dependencies
+      - name: Install Tesseract OCR
         run: |
-          pip install requests boto3 Pillow numpy
+          sudo apt-get update -qq
+          sudo apt-get install -y tesseract-ocr
 
-      - name: Fetch Radar and Upload to R2
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Resolve run inputs
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_STATION: ${{ github.event.inputs.station || github.event.client_payload.station || 'all' }}
+          INPUT_PRODUCT: ${{ github.event.inputs.product || github.event.client_payload.product || 'all' }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || github.event.client_payload.dry_run || 'false' }}
+        run: |
+          echo "RADAR_STATION=$INPUT_STATION" >> "$GITHUB_ENV"
+          echo "RADAR_PRODUCT=$INPUT_PRODUCT" >> "$GITHUB_ENV"
+          echo "RADAR_DRY_RUN=$INPUT_DRY_RUN" >> "$GITHUB_ENV"
+          echo "Event: $EVENT_NAME"
+          echo "Station: $INPUT_STATION"
+          echo "Product: $INPUT_PRODUCT"
+          echo "Dry run: $INPUT_DRY_RUN"
+
+      - name: Fetch radar, parse UTC panel and archive dBZ NetCDF
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: python fetch_radar.py
+
+      - name: Upload dry-run NetCDF files as an Actions artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mgm-dbz-dry-run
+          path: output/dry-run/**/*.nc
+          if-no-files-found: warn
+          retention-days: 2
