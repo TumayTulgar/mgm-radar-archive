@@ -1,0 +1,7 @@
+After the new collector passes the Istanbul dry-run and one-station R2 upload pilot, remove this obsolete daily batch workflow from the feature branch:
+
+.github/workflows/radar_daily_batch.yml
+
+The old batch_processor.py consumes archived WebP files and is not compatible with the new per-scan NetCDF layout. Do not run it against the new R2 keys. Deleting its current copy from the repository after pilot is recommended; Git history retains the older source.
+
+Do not delete any local historical archive data during this step.

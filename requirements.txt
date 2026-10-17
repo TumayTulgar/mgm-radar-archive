@@ -2,4 +2,6 @@ requests
 boto3
 Pillow
 numpy
-pyproj
+pytesseract
+xarray
+netCDF4
